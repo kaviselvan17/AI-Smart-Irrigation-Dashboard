@@ -3,15 +3,17 @@
 
 // ========================================
 // SMART IRRIGATION - VOICE ASSISTANT
+// Browser Speech Recognition + Flask + Voice Reply
 // ========================================
 
-let audioRecorder = null;
-let recordedChunks = [];
-let audioStream = null;
+let voiceRecognition = null;
 let isListening = false;
 let isProcessing = false;
 
-// Find an HTML element using alternative IDs
+// ========================================
+// FIND HTML ELEMENTS
+// ========================================
+
 function getVoiceElement(...ids) {
     for (const id of ids) {
         const element = document.getElementById(id);
@@ -20,7 +22,10 @@ function getVoiceElement(...ids) {
     return null;
 }
 
-// Display status messages
+// ========================================
+// DISPLAY STATUS
+// ========================================
+
 function setVoiceStatus(message) {
     const status = getVoiceElement(
         "voiceStatus",
@@ -41,7 +46,7 @@ function setVoiceStatus(message) {
 
 function speakVoiceAnswer(text) {
     if (!("speechSynthesis" in window)) {
-        setVoiceStatus("Text-to-speech is not supported.");
+        setVoiceStatus("Speech output is not supported.");
         return;
     }
 
@@ -85,6 +90,9 @@ function speakVoiceAnswer(text) {
 // ========================================
 
 async function sendVoiceQuestion(question) {
+    if (isProcessing) return null;
+
+    isProcessing = true;
     setVoiceStatus("Getting your answer...");
 
     try {
@@ -128,7 +136,9 @@ async function sendVoiceQuestion(question) {
     } catch (error) {
         console.error("Voice assistant error:", error);
 
-        setVoiceStatus(error.message || "Could not connect to Flask.");
+        setVoiceStatus(
+            error.message || "Could not connect to Flask."
+        );
 
         const answerElement = getVoiceElement(
             "voiceAnswer",
@@ -142,199 +152,128 @@ async function sendVoiceQuestion(question) {
         }
 
         return null;
+
+    } finally {
+        isProcessing = false;
     }
 }
 
 // ========================================
-// START MICROPHONE RECORDING
+// START SPEAK-TO-SPEAK ASSISTANT
 // ========================================
 
-async function startVoiceAssistant() {
-    if (isListening || isProcessing) {
-        return;
-    }
+function startVoiceAssistant() {
+    const SpeechRecognition =
+        window.SpeechRecognition ||
+        window.webkitSpeechRecognition;
 
-    if (
-        !navigator.mediaDevices ||
-        !navigator.mediaDevices.getUserMedia ||
-        !window.MediaRecorder
-    ) {
+    if (!SpeechRecognition) {
         setVoiceStatus(
-            "Audio recording is not supported. Use HTTPS in your browser."
+            "Speech recognition is unavailable in this browser. Try a supported browser."
         );
         return;
     }
 
-    try {
-        setVoiceStatus("Requesting microphone access...");
+    if (isListening || isProcessing) {
+        return;
+    }
 
-        audioStream = await navigator.mediaDevices.getUserMedia({
-            audio: true
-        });
+    // Stop any previous spoken answer
+    if ("speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
+    }
 
-        recordedChunks = [];
+    voiceRecognition = new SpeechRecognition();
 
-        let mimeType = "";
+    voiceRecognition.lang = "en-IN";
+    voiceRecognition.continuous = false;
+    voiceRecognition.interimResults = false;
+    voiceRecognition.maxAlternatives = 1;
 
-        // Prefer a format supported by the browser
-        if (MediaRecorder.isTypeSupported("audio/mp4")) {
-            mimeType = "audio/mp4";
-        } else if (MediaRecorder.isTypeSupported("audio/webm")) {
-            mimeType = "audio/webm";
-        } else if (MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) {
-            mimeType = "audio/webm;codecs=opus";
-        }
-
-        audioRecorder = mimeType
-            ? new MediaRecorder(audioStream, { mimeType })
-            : new MediaRecorder(audioStream);
-
-        audioRecorder.ondataavailable = (event) => {
-            if (event.data && event.data.size > 0) {
-                recordedChunks.push(event.data);
-            }
-        };
-
-        audioRecorder.onerror = (event) => {
-            console.error("Recorder error:", event);
-            setVoiceStatus("Recording failed. Please try again.");
-        };
-
-        audioRecorder.onstop = async () => {
-            isListening = false;
-            isProcessing = true;
-
-            try {
-                setVoiceStatus("Converting speech to text...");
-
-                const actualType =
-                    audioRecorder.mimeType || "audio/webm";
-
-                const extension = actualType.includes("mp4")
-                    ? "mp4"
-                    : "webm";
-
-                const audioBlob = new Blob(recordedChunks, {
-                    type: actualType
-                });
-
-                if (audioBlob.size === 0) {
-                    throw new Error(
-                        "No audio recorded. Please try again."
-                    );
-                }
-
-                const formData = new FormData();
-
-                formData.append(
-                    "audio",
-                    audioBlob,
-                    `recording.${extension}`
-                );
-
-                const response = await fetch("/api/transcribe", {
-                    method: "POST",
-                    body: formData
-                });
-
-                const data = await response.json();
-
-                if (!response.ok) {
-                    throw new Error(
-                        data.error || "Speech transcription failed."
-                    );
-                }
-
-                const question = (data.text || "").trim();
-
-                if (!question) {
-                    throw new Error(
-                        "No speech detected. Please speak clearly."
-                    );
-                }
-
-                const questionElement = getVoiceElement(
-                    "voiceQuestion",
-                    "voice-question",
-                    "userQuestion"
-                );
-
-                if (questionElement) {
-                    questionElement.textContent = question;
-                }
-
-                setVoiceStatus("Question detected: " + question);
-
-                await sendVoiceQuestion(question);
-
-            } catch (error) {
-                console.error("Audio processing error:", error);
-
-                setVoiceStatus(
-                    error.message || "Could not process the recording."
-                );
-
-            } finally {
-                if (audioStream) {
-                    audioStream.getTracks().forEach(track => track.stop());
-                    audioStream = null;
-                }
-
-                audioRecorder = null;
-                recordedChunks = [];
-                isProcessing = false;
-            }
-        };
-
-        audioRecorder.start();
-
+    voiceRecognition.onstart = () => {
         isListening = true;
-        setVoiceStatus("Recording... Tap Speak again to finish.");
+        setVoiceStatus("Listening... Speak your question.");
+    };
 
-    } catch (error) {
-        console.error("Microphone access error:", error);
+    voiceRecognition.onresult = async (event) => {
+        const question =
+            event.results[0][0].transcript.trim();
 
-        if (audioStream) {
-            audioStream.getTracks().forEach(track => track.stop());
-            audioStream = null;
+        if (!question) {
+            setVoiceStatus("No speech detected. Try again.");
+            return;
         }
 
-        audioRecorder = null;
+        const questionElement = getVoiceElement(
+            "voiceQuestion",
+            "voice-question",
+            "userQuestion"
+        );
+
+        if (questionElement) {
+            questionElement.textContent = question;
+        }
+
+        setVoiceStatus("You asked: " + question);
+
+        // Send recognized speech to your existing Flask API.
+        // Flask returns the answer, and the browser speaks it.
+        await sendVoiceQuestion(question);
+    };
+
+    voiceRecognition.onerror = (event) => {
+        console.error(
+            "Speech recognition error:",
+            event.error
+        );
+
+        const messages = {
+            "not-allowed":
+                "Microphone permission denied. Allow microphone access.",
+            "service-not-allowed":
+                "This browser does not allow speech recognition for this site.",
+            "no-speech":
+                "No speech detected. Tap Speak and try again.",
+            "network":
+                "Speech recognition network error. Check your internet.",
+            "audio-capture":
+                "No microphone detected."
+        };
+
+        setVoiceStatus(
+            messages[event.error] ||
+            "Microphone error: " + event.error
+        );
+    };
+
+    voiceRecognition.onend = () => {
         isListening = false;
+        voiceRecognition = null;
+    };
 
-        if (error.name === "NotAllowedError") {
-            setVoiceStatus(
-                "Microphone permission denied. Allow microphone access."
-            );
-        } else {
-            setVoiceStatus(
-                error.message || "Cannot access microphone."
-            );
-        }
+    try {
+        voiceRecognition.start();
+    } catch (error) {
+        console.error(error);
+        isListening = false;
+        voiceRecognition = null;
+        setVoiceStatus("Could not start the microphone. Try again.");
     }
 }
 
 // ========================================
-// STOP RECORDING / SPEECH
+// STOP LISTENING / STOP SPEAKING
 // ========================================
 
 function stopVoiceAssistant() {
-    if (audioRecorder && audioRecorder.state === "recording") {
-        setVoiceStatus("Processing recording...");
-        audioRecorder.stop();
-        return;
+    if (voiceRecognition && isListening) {
+        voiceRecognition.stop();
     }
 
     if ("speechSynthesis" in window) {
         window.speechSynthesis.cancel();
     }
 
-    if (audioStream) {
-        audioStream.getTracks().forEach(track => track.stop());
-        audioStream = null;
-    }
-
-    isListening = false;
     setVoiceStatus("Stopped");
 }
 
@@ -379,24 +318,24 @@ document.addEventListener("DOMContentLoaded", () => {
     );
 
     if (micButton) {
-        micButton.addEventListener("click", () => {
-            if (
-                audioRecorder &&
-                audioRecorder.state === "recording"
-            ) {
-                stopVoiceAssistant();
-            } else {
-                startVoiceAssistant();
-            }
-        });
+        micButton.addEventListener(
+            "click",
+            startVoiceAssistant
+        );
     }
 
     if (askButton) {
-        askButton.addEventListener("click", askVoiceAssistant);
+        askButton.addEventListener(
+            "click",
+            askVoiceAssistant
+        );
     }
 
     if (stopButton) {
-        stopButton.addEventListener("click", stopVoiceAssistant);
+        stopButton.addEventListener(
+            "click",
+            stopVoiceAssistant
+        );
     }
 
     console.log("Smart Irrigation Voice Assistant loaded.");
